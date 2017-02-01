@@ -80,10 +80,11 @@ class Vector3 {
 struct Color {
   float r, g, b;
   Color() : r(0), g(0), b(0) {}
-  Color(float _intensity) : r(_intensity), g(_intensity), b(_intensity) {}
+  Color(float c) : r(c), g(c), b(c) {}
   Color(float _r, float _g, float _b) : r(_r), g(_g), b(_b) {}
-  Color operator * (float f) { return Color(r*f, g*f, b*f); }
-  Color operator + (Color c) { return Color(r+c.r, g+c.g, b+c.b); } 
+  Color operator * (float f) { return Color(r * f, g * f, b * f); }
+  Color operator * (Vector3 f) { return Color(r * f.x, g * f.y, b * f.z); }
+  Color operator + (Color c) { return Color(r + c.r, g + c.g, b + c.b); } 
 
   Color& clamp() {
     if(r < 0) r = 0;
@@ -109,11 +110,12 @@ class Ray {
 
 class Shape {
   public:
-    Vector3 center;     // Position
-    Color color;        // Surface Color
-    float ka, kd, ks;   // Ambient, Diffuse, Specular Coefficents
+    Vector3 center;       // Position
+    Color color;          // Surface Diffuse Color
+    Color color_specular; // Surface Specular Color
+    float ka, kd, ks;     // Ambient, Diffuse, Specular Coefficents
     float shininess;
-    float reflectivity; // Reflectivity of material [0, 1]
+    float reflectivity;   // Reflectivity of material [0, 1]
 
     virtual bool intersect(const Ray &ray, float &to, float &t1) { return false; }
     virtual bool intersect2(const Ray &ray, float &t) { return false; }
@@ -128,6 +130,7 @@ class Sphere : public Shape {
       { 
         center = _center;
         color = _color;
+        color_specular = Color(255);
         ka = _ka;
         kd = _kd;
         ks = _ks;
@@ -173,41 +176,54 @@ class Sphere : public Shape {
 
 class Light {
   public:
-    Color color;
-    float intensity;
-};
-
-class AmbientLight {
-  public:
-    Color color;
-    float intensity;
-
-    AmbientLight() : color(Color(255,255,255)), intensity(1.0) {}
-    AmbientLight(Color _color) : color(_color), intensity(1.0) {}
-    AmbientLight(Color _color, float _intensity) : color(_color), intensity(_intensity) {}
-};
-
-class DirectionalLight {
-  public:
     Vector3 position;
-    Color color;
-    float intensity;
-    
-    DirectionalLight() : position(Vector3()), color(Color(255,255,255)), intensity(1.0) {}
-    DirectionalLight(Vector3 _position, Color _color) : position(_position), color(_color), intensity(1.0) {}
-    DirectionalLight(Vector3 _position, Color _color, float _intensity) : position(_position), color(_color), intensity(_intensity) {}
+    Vector3 intensity;
+
+    Light() : position(Vector3()), intensity(Vector3()) {}
+    Light(Vector3 _intensity) : position(Vector3()), intensity(_intensity) {} 
+    Light(Vector3 _position, Vector3 _intensity) : position(_position), intensity(_intensity) {} 
+    virtual float attenuate() { return 1.0; }
+};
+
+class AmbientLight : public Light {
+  public:
+    AmbientLight() : Light() {}
+    AmbientLight(Vector3 _intensity) : Light(_intensity) {}
+    float attenuate() { return 1.0; }
+};
+
+class DirectionalLight : public Light {
+  public:
+    DirectionalLight() : Light() {}
+    DirectionalLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
+    float attenuate() { return 1.0; }
+};
+
+class PointLight : public Light {
+  public:
+    PointLight() : Light() {}
+    PointLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
+    float attenuate(float r) { return 1.0 / r * r; }
+};
+
+class SpotLight : public Light {
+  public:
+    SpotLight() : Light() {}
+    SpotLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
+    float attenuate(Vector3 Vobj, Vector3 Vlight) { return Vobj.dot(Vlight); }
 };
 
 class Scene {
   public:
     vector<Shape*> objects;
+    vector<Light*> lights;
     AmbientLight ambientLight;
     DirectionalLight light;
     Color backgroundColor;
 
     Scene() { backgroundColor = Color(); }
     void addAmbientLight(AmbientLight _light) { ambientLight = _light;}
-    void addLight(DirectionalLight _light) { light = _light; }
+    void addLight(DirectionalLight _light) { light = _light; lights.push_back(& _light); }
     void addObject(Sphere _object) { objects.push_back(&_object); }
 };
 
@@ -317,7 +333,7 @@ class Renderer {
       float shinniness = hit->shininess;
       float NdotH = N.dot(H);
       float specularIntensity = pow( max(0.0f, NdotH), shinniness );
-      Color specular = scene.light.color * scene.light.intensity * specularIntensity;// * (1/ distance2);
+      Color specular = hit->color_specular * scene.light.intensity * specularIntensity;// * (1/ distance2);
 
       rayColor = ambient * hit->ka + diffuse * hit->kd + specular * hit->ks;        
 
@@ -379,8 +395,8 @@ int main() {
   scene.addObject( Sphere( Vector3(-5.5, 0, 15), 3, Color(51, 51, 51), 0.3, 0.8, 0.25, 32.0, 0.0) );  // Black
   
   // Add light to scene
-  scene.addAmbientLight ( AmbientLight( Color(255,255,255), 1.0) );
-  scene.addLight( DirectionalLight( Vector3(0, 20, 30), Color(255, 255, 255), 2.0) );
+  scene.addAmbientLight ( AmbientLight( Vector3(1.0) ) );
+  scene.addLight( DirectionalLight( Vector3(0, 20, 30), Vector3(2.0) ) );
 
   // Add camera
   Camera camera = Camera( Vector3(0,0,-20), width, height, fov);
