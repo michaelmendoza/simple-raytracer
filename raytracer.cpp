@@ -17,6 +17,7 @@ using namespace std;
 #define INFINITY 1e8
 #endif
 
+#define K_EPSILON 0.00001
 #define MAX_RAY_DEPTH 5
 
 class Vector3 {
@@ -39,6 +40,7 @@ class Vector3 {
     Vector3& operator *= (const Vector3 &v) { x *= v.x, y *= v.y, z *= v.z; return *this; }
 
     float dot(const Vector3 &v) const { return x * v.x + y * v.y + z * v.z; }
+    Vector3 cross(const Vector3 &v) const { return Vector3(y * v.z - z * v.y, z * v.x - x * v.z, x * v.y - y * v.x); }
     float length2() const { return x * x + y * y + z * z; }
     float length() const { return sqrt(length2()); }
 
@@ -121,7 +123,9 @@ class Shape {
     float reflectivity;   // Reflectivity of material [0, 1]
 
     virtual bool intersect(const Ray &ray, float &to, float &t1) { return false; }
+    virtual bool intersect(const Ray &ray, float &t) { return false; }
     virtual bool intersect2(const Ray &ray, float &t) { return false; }
+    virtual Vector3 getNormal(const Vector3 &hitPoint) { return Vector3(); }
 };
 
 class Sphere : public Shape {
@@ -172,14 +176,77 @@ class Sphere : public Shape {
       }
     }
 
-    Vector3 getNormal(const Vector3 &pHit) {
-      return (center - pHit) / radius;
+    Vector3 getNormal(const Vector3 &hitPoint) {
+      return (hitPoint - center) / radius;
     }
 };
 
 class Triangle : public Shape {
   public:
-    Triangle() {}
+    Vector3 v0;
+    Vector3 v1;
+    Vector3 v2;
+
+    Triangle(const Vector3 &_v0, const Vector3 &_v1, const Vector3 &_v2, const Color &_color, const float _ka, const float _kd, const float _ks, const float _shinny = 128.0, const float _reflectScale = 1.0) :
+      v0(_v0), v1(_v1), v2(_v2)
+      {
+        color = _color;
+        color_specular = Color(255);
+        ka = _ka;
+        kd = _kd;
+        ks = _ks;
+        shininess = _shinny;
+        reflectivity = _reflectScale;
+      }
+    
+    // Compute a ray-sphere intersection using the geometric method
+    bool intersect(const Ray &ray, float &t) {
+      Vector3 N = getNormal(Vector3());
+
+      // Check if ray and plane are parallel
+      float NdotRd = N.dot(ray.direction);
+      if(fabs(NdotRd) < K_EPSILON) {
+        return false; // Ray and plane are parallel
+      }
+      
+      // Compute d from the equation of a plane - ax + by + cz + d = 0, n = (a,b,c)
+      float d = N.dot(v0);
+
+      // Compute t
+      float NdotRo = N.dot(ray.origin);
+      t = - ((NdotRo + d) / NdotRd);
+      if(t < 0) return false; // Triangle is behind ray
+
+      // Compute intersection point with plane
+      Vector3 hitPoint = ray.origin + ray.direction * t;
+
+      // Check if intersection point is inside triangle
+      Vector3 C; 
+
+      Vector3 v01 = v1 - v0;
+      Vector3 v12 = v2 - v1;
+      Vector3 v20 = v0 - v2;
+      
+      Vector3 vp0 = hitPoint - v0;
+      C = v01.cross(vp0);
+      if (N.dot(C) < 0) return false;
+
+      Vector3 vp1 = hitPoint - v1;
+      C = v12.cross(vp1);
+      if (N.dot(C) < 0) return false;
+
+      Vector3 vp2 = hitPoint - v2;
+      C = v20.cross(vp2);
+      if (N.dot(C) < 0) return false;
+
+      return true; // Triangle intersects ray
+    }
+
+    Vector3 getNormal(const Vector3 &hitPoint) {
+      Vector3 v01 = v1 - v0;
+      Vector3 v02 = v2 - v0;
+      return v01.cross(v02);
+    }
 };
 
 class Light {
@@ -231,7 +298,7 @@ class Scene {
     Scene() { backgroundColor = Color(); }
     void addAmbientLight(AmbientLight _light) { ambientLight = _light;}
     void addLight(DirectionalLight _light) { lights.push_back(& _light); }
-    void addObject(Sphere _object) { objects.push_back(&_object); }
+    void addObject(Shape *_object) { objects.push_back(_object); }
 };
 
 class Camera { 
@@ -358,12 +425,9 @@ class Renderer {
       }
 
       Vector3 hitPoint = ray.origin + ray.direction * tnear;
-      Vector3 N = hitPoint - hit->center;
-      N.normalize();
-
+      Vector3 N = hit->getNormal(hitPoint);
       Vector3 V = camera.position - hitPoint;
       V.normalize();
-
       rayColor = Lighting::getLighting(*hit, hitPoint, N, V, scene.lights);
 
       if(depth < MAX_RAY_DEPTH) {
@@ -420,13 +484,21 @@ int main() {
   Scene scene = Scene();
   scene.backgroundColor = Color();
 
+  //Triangle s0 = Triangle( Vector3(0,0,0), Vector3(0,0,20), Vector3(20,0,0), Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.4);
+  Sphere s0 = Sphere( Vector3(0, -10004, 20), 10000, Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.4); // Black - Bottom Surface
+  Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 1.0); // Red
+  Sphere s2 = Sphere( Vector3(5, -1, 15), 2, Color(235, 179, 41), 0.4, 0.6, 0.4, 128.0, 1.0); // Yellow
+  Sphere s3 = Sphere( Vector3(5, 0, 25), 3, Color(6, 72, 111), 0.3, 0.8, 0.1, 128.0, 1.0);  // Blue
+  Sphere s4 = Sphere( Vector3(-3.5, -1, 10), 2, Color(8, 88, 56), 0.4, 0.6, 0.5, 64.0, 1.0); // Green
+  Sphere s5 = Sphere( Vector3(-5.5, 0, 15), 3, Color(51, 51, 51), 0.3, 0.8, 0.25, 32.0, 0.0); // Black
+
   // Add spheres to scene
-  scene.addObject( Sphere( Vector3(0, -10004, 20), 10000, Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.4) );  // Black - Bottom Surface
-  scene.addObject( Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 1.0) );    // Red
-  scene.addObject( Sphere( Vector3(5, -1, 15), 2, Color(235, 179, 41), 0.4, 0.6, 0.4, 128.0, 1.0) );  // Yello
-  scene.addObject( Sphere( Vector3(5, 0, 25), 3, Color(6, 72, 111), 0.3, 0.8, 0.1, 128.0, 1.0) );     // Blue
-  scene.addObject( Sphere( Vector3(-3.5, -1, 10), 2, Color(8, 88, 56), 0.4, 0.6, 0.5, 64.0, 1.0) );   // Green
-  scene.addObject( Sphere( Vector3(-5.5, 0, 15), 3, Color(51, 51, 51), 0.3, 0.8, 0.25, 32.0, 0.0) );  // Black
+  scene.addObject( &s0 );  // Black - Bottom Surface
+  scene.addObject( &s1 );  // Red
+  scene.addObject( &s2 );  // Yello
+  scene.addObject( &s3 );  // Blue
+  scene.addObject( &s4 );  // Green
+  scene.addObject( &s5 );  // Black
   
   // Add light to scene
   scene.addAmbientLight ( AmbientLight( Vector3(1.0) ) );
