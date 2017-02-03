@@ -3,7 +3,21 @@
 
 Simple C++ library for 3D raytracing
 
-------
+## How to compile
+
+To compile the project use your favorite compiler and compile raytracer.cpp
+
+```
+g++ raytracer.cpp
+```
+
+## Basic overview
+
+This raytracer was developed for graduate computer graphics class. This library uses no external libraries beside the standard C++ libraries.
+This raytracer is capable of rendering spheres with multiple lights. 
+It features a movable camera with user controled FOV, position, and view angle.
+It renders objects using a Blinn-Phong illumination model, and is capable of rendering reflections. 
+
 
 ## Raytracer Implementation Notes
 

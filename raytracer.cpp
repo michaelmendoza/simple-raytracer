@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <cstdio>
+#include <ctime>
 #include <cmath>
 #include <iostream>
 #include <fstream>
@@ -82,9 +83,11 @@ struct Color {
   Color() : r(0), g(0), b(0) {}
   Color(float c) : r(c), g(c), b(c) {}
   Color(float _r, float _g, float _b) : r(_r), g(_g), b(_b) {}
-  Color operator * (float f) { return Color(r * f, g * f, b * f); }
-  Color operator * (Vector3 f) { return Color(r * f.x, g * f.y, b * f.z); }
-  Color operator + (Color c) { return Color(r + c.r, g + c.g, b + c.b); } 
+  Color operator * (float f) const { return Color(r * f, g * f, b * f); }
+  Color operator * (Vector3 f) const { return Color(r * f.x, g * f.y, b * f.z); }
+  Color operator + (Color c) const { return Color(r + c.r, g + c.g, b + c.b); } 
+  Color& operator += (const Color &c) { r += c.r, g += c.g, b += c.b; return *this; }
+  Color& operator *= (const Color &c) { r *= c.r, g *= c.g, b *= c.b; return *this; }
 
   Color& clamp() {
     if(r < 0) r = 0;
@@ -174,6 +177,11 @@ class Sphere : public Shape {
     }
 };
 
+class Triangle : public Shape {
+  public:
+    Triangle() {}
+};
+
 class Light {
   public:
     Vector3 position;
@@ -218,12 +226,11 @@ class Scene {
     vector<Shape*> objects;
     vector<Light*> lights;
     AmbientLight ambientLight;
-    DirectionalLight light;
     Color backgroundColor;
 
     Scene() { backgroundColor = Color(); }
     void addAmbientLight(AmbientLight _light) { ambientLight = _light;}
-    void addLight(DirectionalLight _light) { light = _light; lights.push_back(& _light); }
+    void addLight(DirectionalLight _light) { lights.push_back(& _light); }
     void addObject(Sphere _object) { objects.push_back(&_object); }
 };
 
@@ -260,6 +267,48 @@ class Camera {
       return rayDirection;
     }
 };
+
+class Lighting {
+  public:
+
+    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const vector<Light*> &lights) {
+      Color ambient = object.color;
+      Color rayColor = ambient * object.ka;
+      for(int i = 0; i < lights.size(); i++) {
+        rayColor += getLighting(object, point, normal, view, *lights[i]);
+      }
+      return rayColor;
+    }
+
+    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const Light &light) {
+      Color rayColor;
+
+      // Create diffuse color
+      Vector3 N = normal;
+      Vector3 L = light.position - point;
+      float distance = L.length();
+      L.normalize();
+      
+      float NdotL = N.dot(L);
+      float intensity = max(0.0f, NdotL); 
+      Color diffuse = object.color * light.intensity * intensity; // * (1 / distance2);
+      
+      // Create specular color
+      Vector3 V = view;
+      Vector3 H = L + V;
+      H.normalize();
+
+      float shinniness = object.shininess;
+      float NdotH = N.dot(H);
+      float specularIntensity = pow( max(0.0f, NdotH), shinniness );
+      Color specular = object.color_specular * light.intensity * specularIntensity;// * (1/ distance2);
+
+      rayColor = diffuse * object.kd + specular * object.ks;   
+
+      return rayColor;
+    }
+};
+
 
 class Renderer {
   public:
@@ -307,35 +356,15 @@ class Renderer {
         else
           return Color();
       }
-      // Create ambient color
-      Color ambient = hit->color;
 
-      // Create diffuse color
       Vector3 hitPoint = ray.origin + ray.direction * tnear;
       Vector3 N = hitPoint - hit->center;
       N.normalize();
 
-      Vector3 L = scene.light.position - hitPoint;
-      float distance = L.length();
-      float distance2 = distance * distance;
-      L.normalize();
-      
-      float NdotL = N.dot(L);
-      float intensity = max(0.0f, NdotL); 
-      Color diffuse = hit->color * scene.light.intensity * intensity;// * (1 / distance2);
-      
-      // Create specular color
       Vector3 V = camera.position - hitPoint;
       V.normalize();
-      Vector3 H = L + V;
-      H.normalize();
 
-      float shinniness = hit->shininess;
-      float NdotH = N.dot(H);
-      float specularIntensity = pow( max(0.0f, NdotH), shinniness );
-      Color specular = hit->color_specular * scene.light.intensity * specularIntensity;// * (1/ distance2);
-
-      rayColor = ambient * hit->ka + diffuse * hit->kd + specular * hit->ks;        
+      rayColor = Lighting::getLighting(*hit, hitPoint, N, V, scene.lights);
 
       if(depth < MAX_RAY_DEPTH) {
           Vector3 R = ray.direction - N * 2 * ray.direction.dot(N);
@@ -379,6 +408,11 @@ class IO {
 };
 
 int main() {
+
+  printf ("Generating Scene ...\n");
+  clock_t t;
+  t = clock();
+
   int width = 1080;
   int height = 800;
   float fov = 30.0;
@@ -397,6 +431,7 @@ int main() {
   // Add light to scene
   scene.addAmbientLight ( AmbientLight( Vector3(1.0) ) );
   scene.addLight( DirectionalLight( Vector3(0, 20, 30), Vector3(2.0) ) );
+  scene.addLight( DirectionalLight( Vector3(20, 20, 30), Vector3(2.0) ) );
 
   // Add camera
   Camera camera = Camera( Vector3(0,0,-20), width, height, fov);
@@ -407,5 +442,8 @@ int main() {
   Renderer r = Renderer(width, height, scene, camera);
   r.render();
 
+  t = clock() - t;
+  printf ("Scene Complete. Time ellpased: %.2f seconds.\n", ((float)t) / CLOCKS_PER_SEC);
+  
   return 0;
 }
