@@ -121,10 +121,9 @@ class Shape {
     float ka, kd, ks;     // Ambient, Diffuse, Specular Coefficents
     float shininess;
     float reflectivity;   // Reflectivity of material [0, 1]
+    float transparency;   // Transparency of material [0, 1]
 
     virtual bool intersect(const Ray &ray, float &to, float &t1) { return false; }
-    virtual bool intersect(const Ray &ray, float &t) { return false; }
-    virtual bool intersect2(const Ray &ray, float &t) { return false; }
     virtual Vector3 getNormal(const Vector3 &hitPoint) { return Vector3(); }
 };
 
@@ -132,7 +131,10 @@ class Sphere : public Shape {
   public:
     float radius, radius2;
 
-    Sphere(const Vector3 &_center, const float _radius, const Color &_color, const float _ka, const float _kd, const float _ks, const float _shinny = 128.0, const float _reflectScale = 1.0) :
+    Sphere(
+      const Vector3 &_center, const float _radius, const Color &_color, 
+      const float _ka, const float _kd, const float _ks, const float _shinny = 128.0, 
+      const float _reflectScale = 1.0, const float _transparency = 0.0) :
       radius(_radius), radius2(_radius*_radius)
       { 
         center = _center;
@@ -143,6 +145,7 @@ class Sphere : public Shape {
         ks = _ks;
         shininess = _shinny;
         reflectivity = _reflectScale;
+        transparency = _transparency;
       }
     
     // Compute a ray-sphere intersection using the geometric method
@@ -158,6 +161,7 @@ class Sphere : public Shape {
       return true;
     }
 
+    /*
     // Computer a ray-sphere intersection using analytic method (w/ quadratic equation)
     bool intersect2(const Ray &ray, float &t) {
       Vector3 o = ray.origin;
@@ -175,6 +179,7 @@ class Sphere : public Shape {
         return true;
       }
     }
+    */
 
     Vector3 getNormal(const Vector3 &hitPoint) {
       return (hitPoint - center) / radius;
@@ -199,8 +204,40 @@ class Triangle : public Shape {
         reflectivity = _reflectScale;
       }
     
-    // Compute a ray-sphere intersection using the geometric method
-    bool intersect(const Ray &ray, float &t) {
+    // Compute a ray-triangle intersection
+    bool intersect(const Ray &ray, float &t, float &tnone) {
+
+      /*
+      Vector3 edge1, edge2;
+      Vector3 P, Q, T;
+      float det, inv_det, u, v;
+      
+      edge1 = v1-v0;
+      edge2 = v2-v0;
+      P = ray.direction.dot(edge2);
+      det = edge1.dot(P);
+
+      if(det < K_EPSILON && det > -K_EPSILON) return false;
+      inv_det = 1.f / det;
+
+      T = ray.origin - v0;
+
+      u = T.dot(P) * inv_det;
+      if(u < 0.f || u > 1.f) return false;
+
+      Q = T.dot(edge1);
+
+      v = ray.direction.dot(Q) * inv_det;
+      if(v < 0.f || u + v > 1.f) return false;
+      
+      t = edge2.dot(Q) * inv_det;
+      
+      Vector3 phit1 = v0 + edge2 * u + edge1 * v;
+      Vector3 phit2 = ray.origin + ray.direction * t;
+
+      return true;
+      */
+
       Vector3 N = getNormal(Vector3());
 
       // Check if ray and plane are parallel
@@ -238,14 +275,16 @@ class Triangle : public Shape {
       Vector3 vp2 = hitPoint - v2;
       C = v20.cross(vp2);
       if (N.dot(C) < 0) return false;
-
+      
       return true; // Triangle intersects ray
     }
 
     Vector3 getNormal(const Vector3 &hitPoint) {
       Vector3 v01 = v1 - v0;
       Vector3 v02 = v2 - v0;
-      return v01.cross(v02);
+      Vector3 N = v01.cross(v02);
+      N.normalize(); 
+      return N;
     }
 };
 
@@ -338,13 +377,37 @@ class Camera {
 class Lighting {
   public:
 
-    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const vector<Light*> &lights) {
+    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const vector<Light*> &lights, const vector<Shape*> &objects) {
       Color ambient = object.color;
       Color rayColor = ambient * object.ka;
+
+      // Compute illumination with shadows
       for(int i = 0; i < lights.size(); i++) {
-        rayColor += getLighting(object, point, normal, view, *lights[i]);
+        bool isInShadow = getShadow(point, *lights[i], objects);
+        
+        if (!isInShadow)
+          rayColor +=  getLighting(object, point, normal, view, *lights[i]);
+        else
+          rayColor += Color(0);
       }
+
       return rayColor;
+    }
+
+    static bool getShadow(const Vector3 &point, const Light &light, const vector<Shape*> &objects) {
+      Vector3 shadowRayDirection = light.position - point;
+      shadowRayDirection.normalize();
+      Ray shadowRay(point, shadowRayDirection);
+
+      bool isInShadow = false;
+      for(int j = 0; j < objects.size(); j++) {
+        float t0 = INFINITY; float t1 = INFINITY;
+        if(objects[j]->intersect(shadowRay, t0, t1)) {
+          isInShadow = true;
+          break;
+        }
+      }
+      return isInShadow;
     }
 
     static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const Light &light) {
@@ -352,6 +415,7 @@ class Lighting {
 
       // Create diffuse color
       Vector3 N = normal;
+      
       Vector3 L = light.position - point;
       float distance = L.length();
       L.normalize();
@@ -426,9 +490,10 @@ class Renderer {
 
       Vector3 hitPoint = ray.origin + ray.direction * tnear;
       Vector3 N = hit->getNormal(hitPoint);
+      N.normalize();
       Vector3 V = camera.position - hitPoint;
       V.normalize();
-      rayColor = Lighting::getLighting(*hit, hitPoint, N, V, scene.lights);
+      rayColor = Lighting::getLighting(*hit, hitPoint, N, V, scene.lights, scene.objects);
 
       if(depth < MAX_RAY_DEPTH) {
           Vector3 R = ray.direction - N * 2 * ray.direction.dot(N);
@@ -484,8 +549,12 @@ int main() {
   Scene scene = Scene();
   scene.backgroundColor = Color();
 
-  //Triangle s0 = Triangle( Vector3(0,0,0), Vector3(0,0,20), Vector3(20,0,0), Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.4);
-  Sphere s0 = Sphere( Vector3(0, -10004, 20), 10000, Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.4); // Black - Bottom Surface
+  Triangle t0 = Triangle( Vector3(0, 4, 30), Vector3(10, 4, 10), Vector3(-10, 4, 10), Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0);
+  Sphere ts0 = Sphere( Vector3(0, -4, 30), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
+  Sphere ts1 = Sphere( Vector3(10, -4, 10), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
+  Sphere ts2 = Sphere( Vector3(-10, -4, 10), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
+
+  Sphere s0 = Sphere( Vector3(0, -10004, 20), 10000, Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.0); // Black - Bottom Surface
   Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 1.0); // Red
   Sphere s2 = Sphere( Vector3(5, -1, 15), 2, Color(235, 179, 41), 0.4, 0.6, 0.4, 128.0, 1.0); // Yellow
   Sphere s3 = Sphere( Vector3(5, 0, 25), 3, Color(6, 72, 111), 0.3, 0.8, 0.1, 128.0, 1.0);  // Blue
@@ -493,12 +562,19 @@ int main() {
   Sphere s5 = Sphere( Vector3(-5.5, 0, 15), 3, Color(51, 51, 51), 0.3, 0.8, 0.25, 32.0, 0.0); // Black
 
   // Add spheres to scene
-  scene.addObject( &s0 );  // Black - Bottom Surface
+  //scene.addObject( &t0 );  // Black - Bottom Surface
+  //scene.addObject( &ts0 );
+  //scene.addObject( &ts1 );
+  //scene.addObject( &ts2 );
+  //scene.addObject( &s0 );
+  
+  scene.addObject( &s0 );
   scene.addObject( &s1 );  // Red
   scene.addObject( &s2 );  // Yello
   scene.addObject( &s3 );  // Blue
   scene.addObject( &s4 );  // Green
   scene.addObject( &s5 );  // Black
+  
   
   // Add light to scene
   scene.addAmbientLight ( AmbientLight( Vector3(1.0) ) );
