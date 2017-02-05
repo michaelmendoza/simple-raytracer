@@ -87,6 +87,7 @@ struct Color {
   Color(float _r, float _g, float _b) : r(_r), g(_g), b(_b) {}
   Color operator * (float f) const { return Color(r * f, g * f, b * f); }
   Color operator * (Vector3 f) const { return Color(r * f.x, g * f.y, b * f.z); }
+  Color operator * (Color c) const { return Color(r * c.r, g * c.g, b * c.b); }
   Color operator + (Color c) const { return Color(r + c.r, g + c.g, b + c.b); } 
   Color& operator += (const Color &c) { r += c.r, g += c.g, b += c.b; return *this; }
   Color& operator *= (const Color &c) { r *= c.r, g *= c.g, b *= c.b; return *this; }
@@ -192,7 +193,10 @@ class Triangle : public Shape {
     Vector3 v1;
     Vector3 v2;
 
-    Triangle(const Vector3 &_v0, const Vector3 &_v1, const Vector3 &_v2, const Color &_color, const float _ka, const float _kd, const float _ks, const float _shinny = 128.0, const float _reflectScale = 1.0) :
+    Triangle(
+      const Vector3 &_v0, const Vector3 &_v1, const Vector3 &_v2, const Color &_color, 
+      const float _ka, const float _kd, const float _ks, const float _shinny = 128.0, 
+      const float _reflectScale = 1.0, const float _transparency = 0.0) :
       v0(_v0), v1(_v1), v2(_v2)
       {
         color = _color;
@@ -202,6 +206,7 @@ class Triangle : public Shape {
         ks = _ks;
         shininess = _shinny;
         reflectivity = _reflectScale;
+        transparency = _transparency;
       }
     
     // Compute a ray-triangle intersection
@@ -296,35 +301,35 @@ class Light {
     Light() : position(Vector3()), intensity(Vector3()) {}
     Light(Vector3 _intensity) : position(Vector3()), intensity(_intensity) {} 
     Light(Vector3 _position, Vector3 _intensity) : position(_position), intensity(_intensity) {} 
-    virtual float attenuate() { return 1.0; }
+    virtual float attenuate(const float &r) const { return 1.0; }
 };
 
 class AmbientLight : public Light {
   public:
     AmbientLight() : Light() {}
     AmbientLight(Vector3 _intensity) : Light(_intensity) {}
-    float attenuate() { return 1.0; }
+    float attenuate(const float &r) const { return 1.0; }
 };
 
 class DirectionalLight : public Light {
   public:
     DirectionalLight() : Light() {}
     DirectionalLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
-    float attenuate() { return 1.0; }
+    float attenuate(const float &r) const { return 1.0; }
 };
 
 class PointLight : public Light {
   public:
     PointLight() : Light() {}
     PointLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
-    float attenuate(float r) { return 1.0 / r * r; }
+    float attenuate(const float &r) const { return 1.0 / (r * r); }
 };
 
 class SpotLight : public Light {
   public:
     SpotLight() : Light() {}
     SpotLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
-    float attenuate(Vector3 Vobj, Vector3 Vlight) { return Vobj.dot(Vlight); }
+    float attenuate(Vector3 Vobj, Vector3 Vlight) const { return Vobj.dot(Vlight); }
 };
 
 class Scene {
@@ -336,7 +341,7 @@ class Scene {
 
     Scene() { backgroundColor = Color(); }
     void addAmbientLight(AmbientLight _light) { ambientLight = _light;}
-    void addLight(DirectionalLight _light) { lights.push_back(& _light); }
+    void addLight(Light *_light) { lights.push_back(_light); }
     void addObject(Shape *_object) { objects.push_back(_object); }
 };
 
@@ -386,7 +391,7 @@ class Lighting {
         bool isInShadow = getShadow(point, *lights[i], objects);
         
         if (!isInShadow)
-          rayColor +=  getLighting(object, point, normal, view, *lights[i]);
+          rayColor +=  getLighting(object, point, normal, view, lights[i]);
         else
           rayColor += Color(0);
       }
@@ -410,19 +415,20 @@ class Lighting {
       return isInShadow;
     }
 
-    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const Light &light) {
+    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const Light *light) {
       Color rayColor;
 
       // Create diffuse color
       Vector3 N = normal;
       
-      Vector3 L = light.position - point;
+      Vector3 L = light->position - point;
       float distance = L.length();
       L.normalize();
-      
+      float attenuate = light->attenuate(distance);
+
       float NdotL = N.dot(L);
       float intensity = max(0.0f, NdotL); 
-      Color diffuse = object.color * light.intensity * intensity; // * (1 / distance2);
+      Color diffuse = object.color * light->intensity * intensity * attenuate;
       
       // Create specular color
       Vector3 V = view;
@@ -432,7 +438,7 @@ class Lighting {
       float shinniness = object.shininess;
       float NdotH = N.dot(H);
       float specularIntensity = pow( max(0.0f, NdotH), shinniness );
-      Color specular = object.color_specular * light.intensity * specularIntensity;// * (1/ distance2);
+      Color specular = object.color_specular * light->intensity * specularIntensity * attenuate;
 
       rayColor = diffuse * object.kd + specular * object.ks;   
 
@@ -493,14 +499,39 @@ class Renderer {
       N.normalize();
       Vector3 V = camera.position - hitPoint;
       V.normalize();
+
       rayColor = Lighting::getLighting(*hit, hitPoint, N, V, scene.lights, scene.objects);
 
-      if(depth < MAX_RAY_DEPTH) {
+      float bias = 1e-4;
+      bool inside = false;
+      if (ray.direction.dot(N) > 0) N = -N, inside = true;
+      if( (hit->transparency > 0 || hit->reflectivity > 0) && depth < MAX_RAY_DEPTH) {
+          
+          // Compute Reflection Ray and Color
           Vector3 R = ray.direction - N * 2 * ray.direction.dot(N);
-          Ray rRay(hitPoint, R);
+          Ray rRay(hitPoint + N * bias, R);
           float VdotR =  max(0.0f, V.dot(-R));
-          Color reflectionColor = trace(rRay,  depth + 1) * VdotR;
-          rayColor = rayColor + (reflectionColor * hit->reflectivity);
+          Color reflectionColor = trace(rRay,  depth + 1); //* VdotR;
+          Color refractionColor = Color();
+
+          if (hit->transparency > 0) {
+            // Compute Refracted Ray (transmission ray) and Color
+            float ni = 1.0;
+            float nt = 1.1;
+            float nit = ni / nt;
+            if(inside) nit = 1 / nit;
+            float costheta = - N.dot(ray.direction);
+            float k = 1 - nit * nit * (1 - costheta * costheta);
+            Vector3 T = ray.direction * nit + N * (nit * costheta - sqrt(k));
+            T.normalize();
+
+            Ray refractionRay(hitPoint - N * bias, T);
+            refractionColor = trace(refractionRay, depth + 1);
+            rayColor = (reflectionColor * hit->reflectivity) + (refractionColor * hit->transparency);
+          }
+          else {
+            rayColor = rayColor + (reflectionColor * hit->reflectivity);
+          }
           return rayColor;
         }
         else {
@@ -549,24 +580,27 @@ int main() {
   Scene scene = Scene();
   scene.backgroundColor = Color();
 
-  Triangle t0 = Triangle( Vector3(0, 4, 30), Vector3(10, 4, 10), Vector3(-10, 4, 10), Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0);
-  Sphere ts0 = Sphere( Vector3(0, -4, 30), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
-  Sphere ts1 = Sphere( Vector3(10, -4, 10), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
-  Sphere ts2 = Sphere( Vector3(-10, -4, 10), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
+  Triangle t0 = Triangle( Vector3(0, -4+1, 0), Vector3(1, -4+-1, 0), Vector3(-1, -4+-1, 0), Color(165, 10, 14), 1.0, 0.5, 0.0, 128.0, 0.0);
+  Triangle t1 = Triangle( Vector3(0, 4, -30), Vector3(5, -4, -30), Vector3(-5, -4, -30), Color(165, 10, 14), 1.0, 0.5, 0.0, 128.0, 0.0);
+
+  Sphere ts0 = Sphere( Vector3(0, 4, 30), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
+  Sphere ts1 = Sphere( Vector3(5, -4, 30), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
+  Sphere ts2 = Sphere( Vector3(-5, -4, 30), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
 
   Sphere s0 = Sphere( Vector3(0, -10004, 20), 10000, Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.0); // Black - Bottom Surface
-  Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 1.0); // Red
+  //Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 1.0); // Red
+  Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 0.05, 0.95); // Red
   Sphere s2 = Sphere( Vector3(5, -1, 15), 2, Color(235, 179, 41), 0.4, 0.6, 0.4, 128.0, 1.0); // Yellow
   Sphere s3 = Sphere( Vector3(5, 0, 25), 3, Color(6, 72, 111), 0.3, 0.8, 0.1, 128.0, 1.0);  // Blue
   Sphere s4 = Sphere( Vector3(-3.5, -1, 10), 2, Color(8, 88, 56), 0.4, 0.6, 0.5, 64.0, 1.0); // Green
   Sphere s5 = Sphere( Vector3(-5.5, 0, 15), 3, Color(51, 51, 51), 0.3, 0.8, 0.25, 32.0, 0.0); // Black
 
   // Add spheres to scene
-  //scene.addObject( &t0 );  // Black - Bottom Surface
-  //scene.addObject( &ts0 );
-  //scene.addObject( &ts1 );
-  //scene.addObject( &ts2 );
-  //scene.addObject( &s0 );
+  scene.addObject( &t0 );  
+  scene.addObject( &t1 ); 
+  scene.addObject( &ts0 );
+  scene.addObject( &ts1 );
+  scene.addObject( &ts2 );
   
   scene.addObject( &s0 );
   scene.addObject( &s1 );  // Red
@@ -575,16 +609,18 @@ int main() {
   scene.addObject( &s4 );  // Green
   scene.addObject( &s5 );  // Black
   
-  
   // Add light to scene
   scene.addAmbientLight ( AmbientLight( Vector3(1.0) ) );
-  scene.addLight( DirectionalLight( Vector3(0, 20, 30), Vector3(2.0) ) );
-  scene.addLight( DirectionalLight( Vector3(20, 20, 30), Vector3(2.0) ) );
+  DirectionalLight l0 = DirectionalLight( Vector3(0, 20, 35), Vector3(1.4) );
+  PointLight l1 = PointLight( Vector3(20, 20, 35), Vector3(1000.0) );  
+  scene.addLight( &l0 );
+  scene.addLight( &l1 );
 
   // Add camera
+  //Camera camera = Camera( Vector3(0,0,0), width, height, fov);
   Camera camera = Camera( Vector3(0,0,-20), width, height, fov);
-  //camera.position = Vector3(0, 20, -20);
-  //camera.angleX = 30 * M_PI/ 180.0;
+  camera.position = Vector3(0, 20, -20);
+  camera.angleX = 30 * M_PI/ 180.0;
 
   // Create Renderer
   Renderer r = Renderer(width, height, scene, camera);
