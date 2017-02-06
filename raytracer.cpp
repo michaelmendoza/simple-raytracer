@@ -162,7 +162,6 @@ class Sphere : public Shape {
       return true;
     }
 
-    /*
     // Computer a ray-sphere intersection using analytic method (w/ quadratic equation)
     bool intersect2(const Ray &ray, float &t) {
       Vector3 o = ray.origin;
@@ -174,13 +173,12 @@ class Sphere : public Shape {
       if(disc < 0) return false;
       else {
         disc = sqrt(disc);
-        float t0 = -b-disc;
-        float t1 = -b+disc;
+        float t0 = -b - disc;
+        float t1 = -b + disc;
         t = (t0 < t1) ? t0 : t1;
         return true;
       }
     }
-    */
 
     Vector3 getNormal(const Vector3 &hitPoint) {
       return (hitPoint - center) / radius;
