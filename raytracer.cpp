@@ -6,6 +6,7 @@
 #include <fstream>
 #include <vector>
 #include <cassert>
+#include <typeinfo>
 
 using namespace std;
 
@@ -19,6 +20,8 @@ using namespace std;
 
 #define K_EPSILON 0.00001
 #define MAX_RAY_DEPTH 5
+
+#define USE_DISTRIBUTED_RAYS true
 
 class Vector3 {
   public:
@@ -78,6 +81,14 @@ class Vector3 {
       os << "[" << v.x << " " << v.y << " " << v.z << "]";
       return os;
     }
+
+    static Vector3 random() {
+      float rx = ((float) rand() / (RAND_MAX));
+      float ry = ((float) rand() / (RAND_MAX));
+      float rz = ((float) rand() / (RAND_MAX));
+      return Vector3(rx, ry, rz);
+    }
+
 };
 
 struct Color {
@@ -116,13 +127,15 @@ class Ray {
 
 class Shape {
   public:
-    Vector3 center;       // Position
-    Color color;          // Surface Diffuse Color
-    Color color_specular; // Surface Specular Color
-    float ka, kd, ks;     // Ambient, Diffuse, Specular Coefficents
+    Vector3 center;           // Position
+    Color color;              // Surface Diffuse Color
+    Color color_specular;     // Surface Specular Color
+    float ka, kd, ks;         // Ambient, Diffuse, Specular Coefficents
     float shininess;
-    float reflectivity;   // Reflectivity of material [0, 1]
-    float transparency;   // Transparency of material [0, 1]
+    float reflectivity;       // Reflectivity of material [0, 1]
+    float transparency;       // Transparency of material [0, 1]
+    float glossiness;         // Strength of glossy reflections
+    float glossy_transparency; // Strength of glossy transparency
 
     virtual bool intersect(const Ray &ray, float &to, float &t1) { return false; }
     virtual Vector3 getNormal(const Vector3 &hitPoint) { return Vector3(); }
@@ -147,6 +160,8 @@ class Sphere : public Shape {
         shininess = _shinny;
         reflectivity = _reflectScale;
         transparency = _transparency;
+        glossiness = 0;
+        glossy_transparency = 0;
       }
     
     // Compute a ray-sphere intersection using the geometric method
@@ -205,6 +220,8 @@ class Triangle : public Shape {
         shininess = _shinny;
         reflectivity = _reflectScale;
         transparency = _transparency;
+        glossiness = 0;
+        glossy_transparency = 0;
       }
     
     // Compute a ray-triangle intersection
@@ -295,39 +312,60 @@ class Light {
   public:
     Vector3 position;
     Vector3 intensity;
+    unsigned char type;
 
-    Light() : position(Vector3()), intensity(Vector3()) {}
-    Light(Vector3 _intensity) : position(Vector3()), intensity(_intensity) {} 
-    Light(Vector3 _position, Vector3 _intensity) : position(_position), intensity(_intensity) {} 
+    int samples;
+    float width, height;
+
+    Light() : position(Vector3()), intensity(Vector3()) { type = 0x01; }
+    Light(Vector3 _intensity) : position(Vector3()), intensity(_intensity) { type = 0x01; } 
+    Light(Vector3 _position, Vector3 _intensity) : position(_position), intensity(_intensity) { type = 0x01; } 
     virtual float attenuate(const float &r) const { return 1.0; }
 };
 
 class AmbientLight : public Light {
   public:
-    AmbientLight() : Light() {}
-    AmbientLight(Vector3 _intensity) : Light(_intensity) {}
+    AmbientLight() : Light() { type = 0x02; }
+    AmbientLight(Vector3 _intensity) : Light(_intensity) { type = 0x02; }
     float attenuate(const float &r) const { return 1.0; }
 };
 
 class DirectionalLight : public Light {
   public:
-    DirectionalLight() : Light() {}
-    DirectionalLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
+    DirectionalLight() : Light() { type = 0x04; }
+    DirectionalLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) { type = 0x04; }
     float attenuate(const float &r) const { return 1.0; }
 };
 
 class PointLight : public Light {
   public:
-    PointLight() : Light() {}
-    PointLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
+    PointLight() : Light() { type = 0x08; }
+    PointLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) { type = 0x08; }
     float attenuate(const float &r) const { return 1.0 / (r * r); }
 };
 
 class SpotLight : public Light {
   public:
-    SpotLight() : Light() {}
-    SpotLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {}
+    SpotLight() : Light() { type = 0x10; }
+    SpotLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) { type = 0x10; }
     float attenuate(Vector3 Vobj, Vector3 Vlight) const { return Vobj.dot(Vlight); }
+};
+
+class AreaLight : public Light {
+  public:
+    AreaLight() : Light() {
+      type = 0x20;
+      samples = 2;
+      width = 4;
+      height = 4;
+    }
+    AreaLight(Vector3 _position, Vector3 _intensity) : Light(_position, _intensity) {
+      type = 0x20;
+      samples = 2;
+      width = 4;
+      height = 4;
+    }
+    float attenuate(const float &r) const { return 1.0; }
 };
 
 class Scene {
@@ -380,7 +418,7 @@ class Camera {
 class Lighting {
   public:
 
-    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const vector<Light*> &lights, const vector<Shape*> &objects) {
+    static Color getLightingSimple(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const vector<Light*> &lights, const vector<Shape*> &objects) {
       Color ambient = object.color;
       Color rayColor = ambient * object.ka;
 
@@ -390,8 +428,21 @@ class Lighting {
         
         if (!isInShadow)
           rayColor +=  getLighting(object, point, normal, view, lights[i]);
-        else
-          rayColor += Color(0);
+        //else
+        //  rayColor += Color(0);
+      }
+
+      return rayColor;
+    }
+
+    static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const vector<Light*> &lights, const vector<Shape*> &objects) {
+      Color ambient = object.color;
+      Color rayColor = ambient * object.ka;
+
+      // Compute illumination with shadows
+      for(int i = 0; i < lights.size(); i++) {
+        float shadowFactor = getShadowFactor(point, *lights[i], objects);
+        rayColor += getLighting(object, point, normal, view, lights[i]) * (1.0 - shadowFactor);
       }
 
       return rayColor;
@@ -411,6 +462,51 @@ class Lighting {
         }
       }
       return isInShadow;
+    }
+
+    static float getShadowFactor(const Vector3 &point, const Light &light, const vector<Shape*> &objects) { 
+
+      if(light.type == 0x20) {
+        
+        int shadowCount = 0;
+        Vector3 start(light.position.x - (light.width / 2), light.position.y - (light.height / 2), light.position.z);
+        Vector3 step(light.width / light.samples, light.height / light.samples, 0);
+        Vector3 lightSample;
+        Vector3 jitter;
+
+        for(int i = 0; i < light.samples; i++) {
+          for(int j = 0; j < light.samples; j++) {
+            jitter = Vector3::random() * step - (step / 2.0);
+            lightSample = Vector3(start.x + (step.x * i) + jitter.x, start.y + (step.y * j) + jitter.y, start.z);
+
+            Vector3 shadowRayDirection = lightSample - point;
+            shadowRayDirection.normalize();
+            Ray shadowRay(point, shadowRayDirection);
+
+            bool isInShadow = false;
+            for(int j = 0; j < objects.size(); j++) {
+              float t0 = INFINITY; float t1 = INFINITY;
+              if(objects[j]->intersect(shadowRay, t0, t1)) {
+                isInShadow = true;
+                break;
+              }
+            }
+
+            if(isInShadow)
+              shadowCount++;
+          }
+        }
+
+        return shadowCount / (float) light.samples;  // Light Factor
+      }
+      else {
+        bool isInShadow = getShadow(point, light, objects);
+        if(isInShadow)
+          return 1.0;
+        else
+          return 0.0;
+      }
+      
     }
 
     static Color getLighting(const Shape &object, const Vector3 &point, const Vector3 &normal, const Vector3 &view, const Light *light) {
@@ -444,7 +540,6 @@ class Lighting {
     }
 };
 
-
 class Renderer {
   public:
     int width, height;
@@ -464,6 +559,33 @@ class Renderer {
           Ray ray(camera.position, rayDirection);
           // Sent pixel for traced ray
           *pixel = trace(ray, 0);
+        }
+      }
+
+      drawImage(image, width, height);
+    }
+
+    void render_distributed_rays() { 
+      int samples = 16;
+      float inv_samples = 1 / (float) samples;
+
+      Color *image = new Color[width * height], *pixel = image;
+
+      for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++, pixel++) {
+          for (int s = 0; s < samples; s++) {
+            Vector3 r = Vector3::random();
+            float jx = x + r.x;
+            float jy = y + r.y;
+
+            // Send a jittered ray through each pixel
+            Vector3 rayDirection = camera.pixelToViewport( Vector3(jx, jy, 1) );
+
+            Ray ray(camera.position, rayDirection);
+
+            // Sent pixel for traced ray
+            *pixel += trace(ray, 0) * inv_samples;
+          } 
         }
       }
 
@@ -505,8 +627,11 @@ class Renderer {
       if (ray.direction.dot(N) > 0) N = -N, inside = true;
       if( (hit->transparency > 0 || hit->reflectivity > 0) && depth < MAX_RAY_DEPTH) {
           
-          // Compute Reflection Ray and Color
+          // Compute Reflection Ray and Color 
           Vector3 R = ray.direction - N * 2 * ray.direction.dot(N);
+          R = R + Vector3::random() * hit->glossiness;
+          R.normalize();
+
           Ray rRay(hitPoint + N * bias, R);
           float VdotR =  max(0.0f, V.dot(-R));
           Color reflectionColor = trace(rRay,  depth + 1); //* VdotR;
@@ -521,6 +646,7 @@ class Renderer {
             float costheta = - N.dot(ray.direction);
             float k = 1 - nit * nit * (1 - costheta * costheta);
             Vector3 T = ray.direction * nit + N * (nit * costheta - sqrt(k));
+            T = T + Vector3::random() * hit->glossy_transparency;
             T.normalize();
 
             Ray refractionRay(hitPoint - N * bias, T);
@@ -565,6 +691,12 @@ class IO {
     } 
 };
 
+class MedianSplit {
+  public:
+    void create() { }
+    void algorithm() { }
+};
+
 int main() {
 
   printf ("Generating Scene ...\n");
@@ -586,11 +718,15 @@ int main() {
   Sphere ts2 = Sphere( Vector3(-5, -4, 30), 0.2, Color(255), 0.3, 0.8, 0.5, 128.0, 1.0);
 
   Sphere s0 = Sphere( Vector3(0, -10004, 20), 10000, Color(51, 51, 51), 0.2, 0.5, 0.0, 128.0, 0.0); // Black - Bottom Surface
-  //Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 1.0); // Red
-  Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 0.05, 0.95); // Red
+  Sphere s1 = Sphere( Vector3(0, 0, 20), 4, Color(165, 10, 14), 0.3, 0.8, 0.5, 128.0, 0.05, 0.95); // Clear
+  s1.glossy_transparency = 0.02;
+  s1.glossiness = 0.05;
   Sphere s2 = Sphere( Vector3(5, -1, 15), 2, Color(235, 179, 41), 0.4, 0.6, 0.4, 128.0, 1.0); // Yellow
+  s2.glossiness = 0.2;
   Sphere s3 = Sphere( Vector3(5, 0, 25), 3, Color(6, 72, 111), 0.3, 0.8, 0.1, 128.0, 1.0);  // Blue
+  s3.glossiness = 0.4;
   Sphere s4 = Sphere( Vector3(-3.5, -1, 10), 2, Color(8, 88, 56), 0.4, 0.6, 0.5, 64.0, 1.0); // Green
+  s4.glossiness = 0.3;
   Sphere s5 = Sphere( Vector3(-5.5, 0, 15), 3, Color(51, 51, 51), 0.3, 0.8, 0.25, 32.0, 0.0); // Black
 
   // Add spheres to scene
@@ -602,15 +738,17 @@ int main() {
   
   scene.addObject( &s0 );
   scene.addObject( &s1 );  // Red
-  scene.addObject( &s2 );  // Yello
+  scene.addObject( &s2 );  // Yellow
   scene.addObject( &s3 );  // Blue
   scene.addObject( &s4 );  // Green
   scene.addObject( &s5 );  // Black
   
   // Add light to scene
   scene.addAmbientLight ( AmbientLight( Vector3(1.0) ) );
-  DirectionalLight l0 = DirectionalLight( Vector3(0, 20, 35), Vector3(1.4) );
-  PointLight l1 = PointLight( Vector3(20, 20, 35), Vector3(1000.0) );  
+  //DirectionalLight l0 = DirectionalLight( Vector3(0, 20, 35), Vector3(1.4) );
+  //PointLight l1 = PointLight( Vector3(20, 20, 35), Vector3(1000.0) );  
+  AreaLight l0 = AreaLight( Vector3(0, 20, 35), Vector3(1.4) );
+  AreaLight l1 = AreaLight( Vector3(20, 20, 35), Vector3(1.8) );
   scene.addLight( &l0 );
   scene.addLight( &l1 );
 
@@ -622,7 +760,8 @@ int main() {
 
   // Create Renderer
   Renderer r = Renderer(width, height, scene, camera);
-  r.render();
+  //r.render();
+  r.render_distributed_rays();
 
   t = clock() - t;
   printf ("Scene Complete. Time ellpased: %.2f seconds.\n", ((float)t) / CLOCKS_PER_SEC);
