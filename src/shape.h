@@ -142,12 +142,9 @@ class Triangle : public Shape {
         return false; // Ray and plane are parallel
       }
       
-      // Compute d from the equation of a plane - ax + by + cz + d = 0, n = (a,b,c)
-      float d = N.dot(v0);
-
       // Compute t
-      float NdotRo = N.dot(ray.origin);
-      t = - ((NdotRo + d) / NdotRd);
+      t = -N.dot(ray.origin - v0) / (ray.direction.dot(N));
+
       if(t < 0) return false; // Triangle is behind ray
 
       // Compute intersection point with plane
